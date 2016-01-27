@@ -1,126 +1,104 @@
 # -*- coding: utf-8 -*-
+import io
+import json
 import sqlite3
 
 
 class OpenCNL(object):
     """
-    Biblioteca para ler e consultar banco de dados CNL (Código Nacional de
-    Localidade) seguindo especificações da ANATEL (Agência Nacional de
-    Telecomunicações).
+    Essa classe é responsável por consultar o banco de dados SQLite3 com os
+    dados da ANATEL gerado pelo OpenCNLImporter.
     """
 
-    def __init__(self, base_path, base_number):
+    def __init__(self, caminho_da_base):
         """
-        Lê o arquivo da base e guarda na memória e salva o número de referência.
+        Lê o arquivo da base de um banco SQLite3, previamente importado.
         """
-        self.conn = sqlite3.connect(':memory:')
-        c = self.conn.cursor()
-        c.execute("""
-            CREATE TABLE `open_cnl` (
-                sigla_uf TEXT,
-                sigla_cnl TEXT,
-                codigo_cnl TEXT,
-                nome_da_localidade TEXT,
-                nome_do_municipio TEXT,
-                codigo_da_area_de_tarifacao TEXT,
-                prefixo TEXT,
-                prestadora TEXT,
-                numero_da_faixa_inicial TEXT,
-                numero_da_faixa_final TEXT,
-                latitude TEXT,
-                hemisferio TEXT,
-                longitude TEXT,
-                sigla_cnl_da_area_local TEXT
-            );
-        """)
+        try:
+            self.conn = sqlite3.connect(caminho_da_base)
+        except Exception:
+            raise ErroAoConectarComBancoDeDados
 
-        base_file = open(base_path, 'r')
-        for line in base_file.readlines():
-            processed_line = self.process_line(line.decode('latin-1'))
-            c.execute("""
-                INSERT INTO open_cnl VALUES (
-                    ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-                );
-            """, processed_line)
-
-        base_file.close()
-        prefix = base_number[:-4]
-        self.number_info = c.execute(
-            """SELECT * FROM open_cnl WHERE prefixo = ?;""", (prefix,)).fetchone()
-
-    def process_complete_line(self, line):
+    def pesquisar_localidade(self, prefixo, sufixo, as_json=False):
         """
-        Processa uma linha em uma tupla de acordo com as especificações.
+        Procura pelo por um número cujo prefixo e o sufixo (com DDD) esteja na
+        base e retorna os resultados encontrados.
         """
-        processed_line = (
-            line[:2].strip(), # sigla_uf
-            line[2:6].strip(), # sigla_cnl
-            line[6:11].strip(), # codigo_cnl
-            line[11:61].strip().replace('  ', ''), # nome_da_localidade
-            line[61:111].strip(), # nome_do_municipio
-            line[111:116].strip(), # codigo_da_area_de_tarifacao
-            line[116:123].strip(), # prefixo
-            line[123:153].strip(), # prestadora
-            line[153:157].strip(), # numero_da_faixa_inicial
-            line[157:161].strip(), # numero_da_faixa_final
-            self.process_coordinate(line[161:169].strip()), # latitude
-            line[169:174].strip(), # hemisferio
-            self.process_coordinate(line[174:182].strip()), # longitude
-            line[182:186].strip() # sigla_cnl_da_area_local
+
+        # Pesquisa a localidade no banco de dados.
+        try:
+            localidade = self._pesquisar_localidade(prefixo, sufixo)
+        except LocalidadeNaoEncontrada:
+            if as_json:
+                # Se a opção estiver ativa, retornar como JSON
+                return json.dumps(None)
+
+            return None
+
+        localidade = dict(
+            sigla_uf=localidade[0],
+            sigla_cnl=localidade[1],
+            codigo_cnl=localidade[2],
+            nome_da_localidade=localidade[3],
+            nome_do_municipio=localidade[4],
+            codigo_da_area_de_tarifacao=localidade[5],
+            prefixo=localidade[6],
+            prestadora=localidade[7],
+            numero_da_faixa_inicial=localidade[8],
+            numero_da_faixa_final=localidade[9],
+            latitude=localidade[10],
+            hemisferio=localidade[11],
+            longitude=localidade[12],
+            sigla_cnl_da_area_local=localidade[13],
         )
-        return processed_line
 
-    def process_incomplete_line(self, line):
-        """
-        Processa uma linha em uma tupla de acordo com as especificações.
-        """
-        processed_line = (
-            line[:2].strip(), # sigla_uf
-            line[2:6].strip(), # sigla_cnl
-            line[6:11].strip(), # codigo_cnl
-            line[11:61].strip().replace('  ', ''), # nome_da_localidade
-            line[61:111].strip(), # nome_do_municipio
-            line[111:116].strip(), # codigo_da_area_de_tarifacao
-            line[116:123].strip(), # prefixo
-            line[123:153].strip(), # prestadora
-            line[153:157].strip(), # numero_da_faixa_inicial
-            line[157:161].strip(), # numero_da_faixa_final
-            '', '', '', # latitude, hemisferio, longitude
-            line[161:164].strip() # sigla_cnl_da_area_local
-        )
-        return processed_line
+        if as_json:
+            # Se a opção estiver ativa, retornar como JSON
+            return json.dumps(localidade)
 
-    def process_line(self, line):
-        """
-        Verifica o tamanho da linha e encaminha para o método adequado.
-        """
-        if len(line) > 167:
-            return self.process_complete_line(line)
-        else:
-            return self.process_incomplete_line(line)
+        return localidade
 
-    def process_coordinate(self, coordinate):
-        """
-        Latitude e Longitude foram alterados para o formato GGMMSSCC, onde:
-        GG = Grau,
-        MM = Minuto,
-        SS = Segundo e
-        CC = Centésimos de segundo.
-        Estamos ignorando centésimos de segundo e retornando GG.MMSS (float).
-        """
-        return '%s.%s' % (coordinate[:2], coordinate[2:6])
+    def _pesquisar_localidade(self, prefixo, sufixo):
+        """Função auxiliar para pesquisar número no banco de dados."""
+        try:
+            c = self.conn.cursor()
+            localidade = c.execute("""
+                SELECT
+                    `sigla_uf`,
+                    `sigla_cnl`,
+                    `codigo_cnl`,
+                    `nome_da_localidade`,
+                    `nome_do_municipio`,
+                    `codigo_da_area_de_tarifacao`,
+                    `prefixo`,
+                    `prestadora`,
+                    `numero_da_faixa_inicial`,
+                    `numero_da_faixa_final`,
+                    `latitude`,
+                    `hemisferio`,
+                    `longitude`,
+                    `sigla_cnl_da_area_local`
+                FROM `open_cnl`
+                WHERE `prefixo` = ?
+                AND CAST(`numero_da_faixa_inicial` as INTEGER) <= ?
+                AND CAST(`numero_da_faixa_final` as INTEGER) >= ?;
+            """, (prefixo, int(sufixo), int(sufixo))).fetchone()
+        except Exception:
+            raise ErroAoLerDoBancoDeDados
 
-    def eval_number(self, target_number):
-        """Searchs for target number in the base which is stored in memory."""
-        prefix = target_number[:-4]
-        c = self.conn.cursor()
+        if not localidade:
+            raise LocalidadeNaoEncontrada
 
-        number_info = c.execute(
-            """SELECT * FROM open_cnl WHERE prefixo = ?;""", (prefix,)).fetchone()
+        return localidade
 
-        if number_info[5] == self.number_info[5]:
-            return 'VC1'
-        elif number_info[5][0] == self.number_info[5][0]:
-            return 'VC2'
-        else:
-            return 'VC3'
+
+class LocalidadeNaoEncontrada(Exception):
+    pass
+
+
+class ErroAoLerDoBancoDeDados(Exception):
+    pass
+
+
+class ErroAoConectarComBancoDeDados(Exception):
+    pass

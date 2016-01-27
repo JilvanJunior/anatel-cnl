@@ -1,1 +1,10 @@
 *.pyc
+*.db
+*.sqlite
+*.sqlite3
+*.TXT
+*.DS_Store
+dist/
+build/
+
+!cnl_anatel.sqlite3
